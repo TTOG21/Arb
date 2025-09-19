@@ -1,24 +1,23 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
-import ccxt
 
 app = FastAPI()
 
-# Example model for API requests
-class TickerRequest(BaseModel):
-    exchange: str
-    symbol: str
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
-@app.get("/")
-def root():
-    return {"message": "FastAPI + CCXT backend is running!"}
+@app.post("/screener/start")
+def start_screener():
+    return {"message": "Screener started"}
 
-@app.post("/ticker")
-def get_ticker(req: TickerRequest):
-    try:
-        exchange_class = getattr(ccxt, req.exchange)
-        exchange = exchange_class()
-        ticker = exchange.fetch_ticker(req.symbol)
-        return {"symbol": req.symbol, "ticker": ticker}
-    except Exception as e:
-        return {"error": str(e)}
+@app.get("/screener/status")
+def screener_status():
+    return {"status": "running"}
+
+@app.get("/get_trade_log")
+def get_trade_log(limit: int = 10):
+    return {"logs": []}
+
+@app.get("/find_triangular_arbitrage")
+def find_triangular_arbitrage():
+    return {"opportunity": None}
