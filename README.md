@@ -71,6 +71,7 @@ The roles run in one process, so their agreement is not independent validation
   "balances_by_venue": {"kraken": {"USDT": "1000"}},
   "fee_tiers": {"kraken": {"taker_rate": "0.0026", "fee_side": "quote", "evidence_label": "VERIFIED", "source": "my account fee page, 2026-09-28"}},
   "venue_eligibility": {"kraken": {"eligible": true, "evidence_label": "VERIFIED", "source": "venue terms for my country"}},
+  "venue_rules_verified": {"kraken": {"ioc_supported": true, "evidence_label": "VERIFIED", "source": "venue API docs, order types and minimums"}},
   "available_capital": {"amount": "1000", "asset": "USDT"},
   "trade_size_limit": {"amount": "200", "asset": "USDT"},
   "total_deployed_capital_limit": {"amount": "1000", "asset": "USDT"},
@@ -97,6 +98,9 @@ from your own account.
 - Order books are REST snapshots fetched one after another, not synchronized streams.
   Book age and skew are measured as upper bounds and checked against your limits.
 - Without your own fee tier, fees are ccxt defaults (`ESTIMATED`), which keeps results at `RESEARCH_ONLY`.
+  The same holds for IOC support and order minimums until `venue_rules_verified` is declared, and for
+  markets whose trading status the venue does not report.
+- A stress scenario whose recovery does not fit the visible depth has an unknown loss, which blocks paper candidates.
 - Limits are compared only in the same asset. USD, USDT, USDC and EUR are never assumed interchangeable.
 - Cross-exchange results need a rebalancing cost and declared asset equivalence; transfers are not simulated.
 - Paper fills are model outputs, not live execution evidence.

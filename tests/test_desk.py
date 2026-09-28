@@ -176,6 +176,7 @@ def cross_config(**overrides):
         balances_by_venue={"a": {"USDT": "10000"}, "b": {"BTC": "0.5"}},
         fee_tiers={"a": tier, "b": tier},
         venue_eligibility={v: {"eligible": True, "evidence_label": "VERIFIED", "source": "fixture"} for v in ("a", "b")},
+        venue_rules_verified={v: {"ioc_supported": True, "evidence_label": "VERIFIED", "source": "fixture"} for v in ("a", "b")},
         available_capital={"amount": "20000", "asset": "USDT"},
         trade_size_limit={"amount": "0.5", "asset": "BTC"},
         total_deployed_capital_limit={"amount": "15000", "asset": "USDT"},

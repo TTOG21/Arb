@@ -35,6 +35,8 @@ class VenueMeta:
     default_fee_side: Optional[str]
     ioc_supported: Optional[bool]
     has_fetch_tickers: Optional[bool]
+    # The venue rounds amounts with its own code (e.g. bitfinex), so the generic rule would be a guess.
+    custom_amount_rounding: bool = False
 
 
 class MarketDataSource(Protocol):
@@ -56,9 +58,9 @@ class MarketDataSource(Protocol):
     async def close(self) -> None: ...
 
 
-def amount_rule(market: dict, precision_mode: Optional[int]) -> Optional[AmountRule]:
+def amount_rule(market: dict, precision_mode: Optional[int], custom_rounding: bool = False) -> Optional[AmountRule]:
     value = (market.get("precision") or {}).get("amount")
-    if value is None:
+    if value is None or custom_rounding:
         return None
     value = Decimal(str(value))
     if precision_mode == TICK_SIZE and value > 0:
@@ -70,7 +72,7 @@ def amount_rule(market: dict, precision_mode: Optional[int]) -> Optional[AmountR
     return None
 
 
-def market_rules(venue: str, market: dict, precision_mode: Optional[int]) -> MarketRules:
+def market_rules(venue: str, market: dict, meta: VenueMeta) -> MarketRules:
     limits = market.get("limits") or {}
 
     def minimum(kind: str) -> Optional[Decimal]:
@@ -83,7 +85,7 @@ def market_rules(venue: str, market: dict, precision_mode: Optional[int]) -> Mar
         base=market["base"],
         quote=market["quote"],
         active=market.get("active"),
-        amount_rule=amount_rule(market, precision_mode),
+        amount_rule=amount_rule(market, meta.precision_mode, meta.custom_amount_rounding),
         min_amount=minimum("amount"),
         min_cost=minimum("cost"),
         market_id=market.get("id"),
@@ -185,6 +187,8 @@ class CcxtMarketData:
         )
 
     def venue_meta(self, venue: str) -> VenueMeta:
+        from ccxt.async_support.base.exchange import Exchange as AsyncExchange
+
         client = self._client(venue)
         features = getattr(client, "features", None) or {}
         spot = features.get("spot") if isinstance(features, dict) else None
@@ -196,6 +200,7 @@ class CcxtMarketData:
             default_fee_side=trading.get("feeSide"),
             ioc_supported=tif.get("IOC") if isinstance(tif, dict) else None,
             has_fetch_tickers=client.has.get("fetchTickers"),
+            custom_amount_rounding=type(client).amount_to_precision is not AsyncExchange.amount_to_precision,
         )
 
     def status(self) -> dict:

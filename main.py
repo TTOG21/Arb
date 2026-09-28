@@ -102,7 +102,7 @@ def create_app(market_data: Optional[MarketDataSource] = None, data_dir: Optiona
     # 🔹 Trade log and journal
     # ---------------------------
     @app.get("/get_trade_log")
-    async def get_trade_log(request: Request, limit: int = Query(10, ge=1, le=500)):
+    async def get_trade_log(request: Request, limit: int = Query(10, ge=0, le=500)):
         logs = desk(request).journal.tail(limit, ["PAPER_RESULT"])
         return {"limit": limit, "logs": logs, "note": "Only PAPER simulations appear here. No live trades are placed."}
 

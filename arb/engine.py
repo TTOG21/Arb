@@ -168,14 +168,18 @@ def execute_leg(
 
     if spec.side == "buy":
         price_ok = None if price_limit is None else (lambda p: p <= price_limit)
-        if available is None:
+        budget = None if available is None else available / spend_factor
+        if budget is None:
             wanted = target_base
+        elif price_limit is not None:
+            # An IOC limit order is sized from the budget at the limit price, never from visible depth.
+            wanted = budget / price_limit if target_base is None else min(budget / price_limit, target_base)
         else:
-            affordable = walk_quote_budget(book.asks, available / spend_factor, price_ok)
+            affordable = walk_quote_budget(book.asks, budget)
             wanted = affordable.base if target_base is None else min(affordable.base, target_base)
         qty = rules.round_amount(wanted)
         walk = walk_base(book.asks, qty, price_ok)
-        if available is None:
+        if budget is None or price_limit is not None:
             depth_limited = not walk.complete
         else:
             depth_limited = not affordable.complete and (target_base is None or affordable.base < target_base)
@@ -211,10 +215,14 @@ def execute_leg(
     if depth_limited:
         where = "within the price limit" if price_limit is not None else "in the visible book"
         problems.append(("DEPTH_INSUFFICIENT", f"Not enough {spec.symbol} depth {where}."))
-    if walk.base > 0 and rules.min_amount is not None and walk.base < rules.min_amount:
-        problems.append(("BELOW_MIN_AMOUNT", f"{dstr(walk.base)} is below the minimum amount {dstr(rules.min_amount)}."))
-    if walk.base > 0 and rules.min_cost is not None and walk.quote < rules.min_cost:
-        problems.append(("BELOW_MIN_COST", f"{dstr(walk.quote)} is below the minimum notional {dstr(rules.min_cost)}."))
+    # Venues check minimums on the order, not on how much of it fills.
+    reference = price_limit if price_limit is not None else walk.vwap
+    if qty > 0 and rules.min_amount is not None and qty < rules.min_amount:
+        problems.append(("BELOW_MIN_AMOUNT", f"{dstr(qty)} is below the minimum amount {dstr(rules.min_amount)}."))
+    if qty > 0 and rules.min_cost is not None and reference is not None and qty * reference < rules.min_cost:
+        problems.append(
+            ("BELOW_MIN_COST", f"{dstr(qty * reference)} is below the minimum notional {dstr(rules.min_cost)}.")
+        )
 
     return LegFill(
         spec=spec,
@@ -301,10 +309,21 @@ def max_fillable_start(
     def fits(amount: Decimal) -> bool:
         return not run_chain(legs, rules, books, fees, amount, zero_fees=zero_fees).has("DEPTH_INSUFFICIENT")
 
+    # Nothing larger than the first leg's visible capacity can fit, so search below it.
+    first, book, fee = legs[0], books[0], fees[0]
+    factor = ONE + (ZERO if zero_fees else fee.rate) if fee.in_spent_asset(first.side) else ONE
+    if first.side == "buy":
+        capacity = sum((price * amount for price, amount in book.asks), ZERO) * factor
+    else:
+        capacity = sum((amount for _, amount in book.bids), ZERO) * factor
     if fits(upper):
         return upper
-    low, high = ZERO, upper
-    for _ in range(60):
+    low, high = ZERO, min(upper, capacity)
+    if high > 0 and fits(high):
+        return high
+    for _ in range(200):
+        if high - low <= high * Decimal("1e-12"):
+            break
         mid = (low + high) / 2
         if fits(mid):
             low = mid

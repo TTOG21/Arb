@@ -47,6 +47,14 @@ class VenueEligibility(_Strict):
     source: str = Field(min_length=1)
 
 
+class VenueRulesCheck(_Strict):
+    """The user checked IOC support, size and price increments and minimums in the venue's current documentation."""
+
+    ioc_supported: bool
+    evidence_label: EvidenceLabel
+    source: str = Field(min_length=1)
+
+
 class CostInputs(_Strict):
     adverse_movement_allowance_bps: Optional[Decimal] = Field(default=None, ge=0)
     model_uncertainty_allowance_bps: Optional[Decimal] = Field(default=None, ge=0)
@@ -136,6 +144,7 @@ class DeskConfig(_Strict):
     validation_acceptance_criteria: Optional[Any] = None
     # Backend extensions, not part of the original template.
     venue_eligibility: Optional[dict[str, VenueEligibility]] = None
+    venue_rules_verified: Optional[dict[str, VenueRulesCheck]] = None
     verified_equivalent_assets: list[str] = []
     operational_reserves: Optional[Money] = None
     cost_inputs: CostInputs = CostInputs()
@@ -165,7 +174,7 @@ class DeskConfig(_Strict):
     def _upper_list(cls, value: list[str]) -> list[str]:
         return [v.strip().upper() for v in value]
 
-    @field_validator("fee_tiers", "venue_eligibility")
+    @field_validator("fee_tiers", "venue_eligibility", "venue_rules_verified")
     @classmethod
     def _lower_keys(cls, value: Optional[dict]) -> Optional[dict]:
         return None if value is None else {k.strip().lower(): v for k, v in value.items()}
@@ -200,6 +209,8 @@ def intake_gaps(config: DeskConfig) -> list[dict]:
             need(f"fee_tiers.{venue}", "Without your account fee tier, fees are only ccxt defaults (ESTIMATED).")
         if venue not in (config.venue_eligibility or {}):
             need(f"venue_eligibility.{venue}", "Eligibility must come from current official sources.")
+        if venue not in (config.venue_rules_verified or {}):
+            need(f"venue_rules_verified.{venue}", "IOC support and order minimums otherwise come only from ccxt metadata.")
     if config.available_capital is None:
         need("available_capital", "Capital explicitly available for this experiment.")
     if config.balances_by_venue is None:

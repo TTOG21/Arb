@@ -25,8 +25,13 @@ from arb.roles import PaperPlan
 NOT_EXECUTABLE = {"ZERO_ORDER_AMOUNT", "BELOW_MIN_AMOUNT", "BELOW_MIN_COST", "MARKET_INACTIVE"}
 
 
+def _rejections(fill: LegFill) -> list[str]:
+    """Rule violations a venue would reject the order for."""
+    return [code for code, _ in fill.problems if code in NOT_EXECUTABLE]
+
+
 def _executable(fill: LegFill) -> bool:
-    return fill.filled_base > 0 and not any(code in NOT_EXECUTABLE for code, _ in fill.problems)
+    return fill.filled_base > 0 and not _rejections(fill)
 
 
 class PaperPortfolio:
@@ -94,6 +99,7 @@ class PaperOutcome:
     unrecovered: dict[str, Decimal] = field(default_factory=dict)
     latency_ms: list[int] = field(default_factory=list)  # decision to fresh book, per planned leg
     problems: list[str] = field(default_factory=list)
+    allocated_cost_charged: Decimal = ZERO
 
     def executed(self) -> list[LegFill]:
         return [*self.fills, *self.recovery]
@@ -109,6 +115,7 @@ class PaperOutcome:
             "committed": money(self.plan.committed, asset),
             "planned_net": money(self.plan.planned_net, asset),
             "realized_net": money(self.realized_net, asset),
+            "allocated_cost_charged": money(self.allocated_cost_charged, asset),
             "fills": [
                 {**fill.ledger(), "role": "planned_leg", "fill_ratio": dstr(fill.fill_ratio)} for fill in self.fills
             ]
@@ -171,6 +178,10 @@ async def _simulate_triangle(md: MarketDataSource, plan: PaperPlan, depth: int) 
             target_base=plan.targets[i],
             price_limit=plan.price_limits[i],
         )
+        rejected = _rejections(fill)
+        if rejected:
+            out.problems.append(f"ORDER_REJECTED {leg.symbol}: {', '.join(rejected)}")
+            break
         out.fills.append(fill)
         take(i, fill)
         positions[leg.from_asset] = positions.get(leg.from_asset, ZERO) - fill.spent
@@ -252,10 +263,21 @@ async def _simulate_cross(
         target_base=plan.targets[1],
         price_limit=plan.price_limits[1],
     )
-    out.fills = [buy, sell]
-    books = [consume(books[0], "asks", buy.filled_base), consume(books[1], "bids", sell.filled_base)]
-    quote_flow = sell.received - buy.spent
-    imbalance = buy.received - sell.spent  # > 0: extra base on the buy venue; < 0: short on the sell venue
+    for fill in (buy, sell):
+        rejected = _rejections(fill)
+        if rejected:
+            out.problems.append(f"ORDER_REJECTED {fill.spec.symbol}@{fill.spec.venue}: {', '.join(rejected)}")
+    buy_ok, sell_ok = not _rejections(buy), not _rejections(sell)
+    out.fills = [fill for fill, ok in ((buy, buy_ok), (sell, sell_ok)) if ok]
+    bought = buy.received if buy_ok else ZERO
+    sold = sell.spent if sell_ok else ZERO
+    books = [
+        consume(books[0], "asks", buy.filled_base if buy_ok else ZERO),
+        consume(books[1], "bids", sell.filled_base if sell_ok else ZERO),
+    ]
+    sell_proceeds = sell.received if sell_ok else ZERO
+    quote_flow = sell_proceeds - (buy.spent if buy_ok else ZERO)
+    imbalance = bought - sold  # > 0: extra base on the buy venue; < 0: short on the sell venue
     if imbalance > 0:
         fill = execute_leg(
             buy_leg.reversed(), plan.rules[0], books[0], buy_fee.rate, buy_fee.in_spent_asset("sell"), available=imbalance
@@ -272,7 +294,7 @@ async def _simulate_cross(
             books[1],
             sell_fee.rate,
             sell_fee.in_spent_asset("buy"),
-            available=None,
+            available=balances.get(sell_leg.venue, {}).get(quote, ZERO) + sell_proceeds,
             target_base=target,
         )
         if _executable(fill):
@@ -281,6 +303,9 @@ async def _simulate_cross(
             imbalance += fill.received
     prices = [p for p in (buy.vwap, sell.vwap, *(b.asks[0][0] for b in books if b.asks)) if p is not None]
     shortfall = imbalance * max(prices) if imbalance < 0 else ZERO
+    matched = min(buy.filled_base if buy_ok else ZERO, sell.filled_base if sell_ok else ZERO)
+    rebalancing = plan.allocated_cost * matched / plan.targets[0] if plan.targets[0] > 0 else ZERO
     out.unrecovered = {base: imbalance} if imbalance else {}
-    out.realized_net = quote_flow + shortfall
+    out.allocated_cost_charged = rebalancing
+    out.realized_net = quote_flow + shortfall - rebalancing
     return out

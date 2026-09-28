@@ -112,8 +112,10 @@ class PaperPlan:
     price_limits: list[Decimal]  # worst acceptable price per leg
     accounting_asset: str
     committed: Decimal  # triangular: start amount; cross: quote spent at the buy venue
-    planned_net: Decimal
+    planned_net: Decimal  # conditional net, after every modeled cost
     decision_monotonic: float
+    config_version: int
+    allocated_cost: Decimal = ZERO  # cross: rebalancing cost charged per matched trade
 
 
 @dataclass
@@ -271,7 +273,12 @@ def _book_findings(books: Sequence[BookSnapshot], rules: Sequence[MarketRules]) 
     for rule in rules:
         if rule.active is None:
             findings.append(
-                Finding("SCOUT", "MARKET_STATUS_UNKNOWN", INFO, f"{rule.symbol} on {rule.venue}: venue metadata has no trading status.")
+                Finding(
+                    "SCOUT",
+                    "MARKET_STATUS_UNKNOWN",
+                    CONDITION,
+                    f"{rule.symbol} on {rule.venue}: venue metadata has no trading status, so tradability is unverified.",
+                )
             )
     return findings, problems
 
@@ -519,8 +526,17 @@ class RelayOut:
         return _role_result(self.status, self.findings, order_plan=self.plan)
 
 
-def _plan_leg(fill: LegFill, fee: FeeModel) -> dict:
+def _plan_leg(fill: LegFill, fee: FeeModel, fees_known: bool) -> dict:
     buy = fill.spec.side == "buy"
+    if fees_known:
+        expected_fee = {
+            "amount": dstr(fill.fee_amount),
+            "asset": fill.fee_asset,
+            "rate": dstr(fill.fee_rate),
+            "evidence_label": fee.label.value,
+        }
+    else:
+        expected_fee = {"amount": None, "asset": None, "rate": None, "evidence_label": UNKNOWN.value}
     return {
         **fill.spec.as_dict(),
         "order_type": "limit",
@@ -528,27 +544,41 @@ def _plan_leg(fill: LegFill, fee: FeeModel) -> dict:
         "amount_base": dstr(fill.order_amount),
         "limit_price": dstr(fill.worst_price),
         "limit_meaning": "maximum acceptable purchase price" if buy else "minimum acceptable sale price",
-        "expected_fee": {
-            "amount": dstr(fill.fee_amount),
-            "asset": fill.fee_asset,
-            "rate": dstr(fill.fee_rate),
-            "evidence_label": fee.label.value,
-        },
-        "balance_reservation": {"amount": dstr(fill.spent), "asset": fill.spec.from_asset},
+        "expected_fee": expected_fee,
+        "balance_reservation": {"amount": dstr(fill.spent), "asset": fill.spec.from_asset, "fees_included": fees_known},
         "cancel_condition": "Immediate or cancel: the unfilled remainder is canceled at once. A cancel never undoes filled quantity.",
         "fee_note": "A limit order that takes liquidity pays the taker fee, not the maker fee.",
     }
 
 
-def _relay_common(inp: DeskInputs, fills: Sequence[LegFill], venues: Sequence[str]) -> list[Finding]:
+def _relay_common(
+    inp: DeskInputs, fills: Sequence[LegFill], venues: Sequence[str], rules: Sequence[MarketRules]
+) -> list[Finding]:
     findings = [
         Finding("RELAY", code, RULE_PROBLEM_SEVERITY.get(code, MISSING), detail)
         for fill in fills
         for code, detail in fill.problems
     ]
+    unknown_minimums = [r.symbol for r in rules if r.min_amount is None or r.min_cost is None]
+    if unknown_minimums:
+        findings.append(
+            Finding("RELAY", "MINIMUMS_UNKNOWN", INFO, f"Venue metadata lacks a minimum amount or notional for {', '.join(unknown_minimums)}.")
+        )
     for venue in dict.fromkeys(venues):
+        checked = (inp.config.venue_rules_verified or {}).get(venue)
         support = inp.ioc_support.get(venue)
-        if support is None:
+        if checked is not None:
+            if not checked.ioc_supported:
+                findings.append(
+                    Finding("RELAY", "IOC_NOT_SUPPORTED", MISSING, f"{venue} has no IOC orders ({checked.source}); another order behavior needs engineering.")
+                )
+            elif checked.evidence_label is not VERIFIED:
+                findings.append(
+                    Finding("RELAY", "VENUE_RULES_NOT_VERIFIED", CONDITION, f"Order rules on {venue} are {checked.evidence_label.value}.")
+                )
+            else:
+                findings.append(Finding("RELAY", "VENUE_RULES_VERIFIED", INFO, f"Order rules on {venue}: {checked.source}."))
+        elif support is None:
             findings.append(Finding("RELAY", "IOC_SUPPORT_UNKNOWN", MISSING, f"No metadata on immediate-or-cancel support for {venue}."))
         elif support is False:
             findings.append(
@@ -558,10 +588,10 @@ def _relay_common(inp: DeskInputs, fills: Sequence[LegFill], venues: Sequence[st
             findings.append(
                 Finding(
                     "RELAY",
-                    "IOC_FROM_SDK_METADATA",
-                    INFO,
-                    f"IOC support on {venue} comes from ccxt metadata (ESTIMATED). Confirm it in the venue documentation "
-                    "before any live system.",
+                    "VENUE_RULES_NOT_VERIFIED",
+                    CONDITION,
+                    f"IOC support, increments and minimums on {venue} come only from ccxt metadata (ESTIMATED). Check them "
+                    "in the venue documentation and declare venue_rules_verified.",
                 )
             )
     if inp.balances is None:
@@ -592,8 +622,8 @@ def _relay_triangle(
         return RelayOut(
             RelayResult.BLOCKED, [Finding("RELAY", "NO_EXECUTABLE_PLAN", FAIL, "VECTOR found no feasible size to plan.")]
         )
-    findings = _relay_common(inp, vector.fills, [triangle.venue])
-    out = RelayOut(RelayResult.BLOCKED, findings, plan=[_plan_leg(f, fee) for f, fee in zip(vector.fills, fees)])
+    findings = _relay_common(inp, vector.fills, [triangle.venue], rules)
+    out = RelayOut(RelayResult.BLOCKED, findings, plan=[_plan_leg(f, fee, vector.fees_known) for f, fee in zip(vector.fills, fees)])
     out.recovery_plan = _recovery_plan(
         "If a later leg fails, return the held asset to the start asset through the market that links them in this "
         "triangle, at market (IOC without a price limit, taker fee), on the same venue."
@@ -608,6 +638,54 @@ def _adverse_bps(config: DeskConfig) -> Optional[Decimal]:
     return config.cost_inputs.adverse_movement_allowance_bps
 
 
+def _add_scenario(
+    inp: DeskInputs,
+    out: RelayOut,
+    name: str,
+    held: Decimal,
+    held_asset: str,
+    recovery: LegSpec,
+    sufficient: bool,
+    value_now: Decimal,
+    result: Decimal,
+    asset: str,
+) -> None:
+    """Record one stress scenario. Without enough visible depth for the recovery, its loss is unknown."""
+    if not sufficient:
+        out.findings.append(
+            Finding(
+                "RELAY",
+                "RECOVERY_DEPTH_INSUFFICIENT",
+                MISSING,
+                f"{name}: the recovery does not fit the visible depth, so this snapshot cannot bound the loss.",
+            )
+        )
+    adverse = _adverse_bps(inp.config)
+    out.stress.append(
+        {
+            "scenario": name,
+            "unmatched_exposure": money(held, held_asset),
+            "exposure_value_now": money(value_now, asset) if sufficient else None,
+            "recovery": f"{recovery.side} {recovery.symbol} at market on {recovery.venue}",
+            "adverse_movement_bps_applied": dstr(adverse),
+            "net_result": money(result, asset) if sufficient else None,
+            "loss": money(max(ZERO, -result), asset) if sufficient else None,
+            "recovery_depth_sufficient": sufficient,
+            "time_exposed_ms": None,
+            "evidence_label": weakest([inp.data_label, ESTIMATED]).value if sufficient else UNKNOWN.value,
+            "note": "Valued on the current snapshot. Later moves can make it worse; this is not a maximum possible loss.",
+        }
+    )
+    out.loss_is_lower_bound = adverse is None
+
+
+def _stress_totals(out: RelayOut) -> None:
+    losses = [None if s["loss"] is None else Decimal(s["loss"]["amount"]) for s in out.stress]
+    exposures = [None if s["exposure_value_now"] is None else Decimal(s["exposure_value_now"]["amount"]) for s in out.stress]
+    out.worst_loss = None if None in losses else max(losses)
+    out.max_exposure = None if None in exposures else max(exposures)
+
+
 def _stress_triangle(inp, triangle, rules, fees, books, vector: VectorOut, out: RelayOut) -> None:
     start = triangle.start_asset
     adverse = _adverse_bps(inp.config)
@@ -618,31 +696,13 @@ def _stress_triangle(inp, triangle, rules, fees, books, vector: VectorOut, out: 
         ("LEG_2_FAILS_AFTER_LEG_1", fills[0], [triangle.legs[0].reversed()], [rules[0]], [books[0]], [fees[0]]),
         ("LEG_3_FAILS_AFTER_LEG_2", fills[1], [triangle.legs[2]], [rules[2]], [books[2]], [fees[2]]),
     )
-    losses, exposures = [], []
     for name, fill, legs, leg_rules, leg_books, leg_fees in scenarios:
         held = fill.received
         unwind = run_chain(legs, leg_rules, leg_books, leg_fees, held)
         result = unwind.final_amount * haircut + start_leftover - vector.feasible
-        losses.append(max(ZERO, -result))
-        exposures.append(unwind.final_amount)
-        out.stress.append(
-            {
-                "scenario": name,
-                "unmatched_exposure": money(held, fill.spec.to_asset),
-                "exposure_value_now": money(unwind.final_amount, start),
-                "recovery": f"{legs[0].side} {legs[0].symbol} at market",
-                "adverse_movement_bps_applied": dstr(adverse),
-                "net_result": money(result, start),
-                "loss": money(max(ZERO, -result), start),
-                "recovery_depth_sufficient": not unwind.has("DEPTH_INSUFFICIENT"),
-                "time_exposed_ms": None,
-                "evidence_label": weakest([inp.data_label, ESTIMATED]).value,
-                "note": "Valued on the current snapshot. Later moves can make it worse; this is not a maximum possible loss.",
-            }
-        )
-    out.worst_loss = max(losses)
-    out.loss_is_lower_bound = adverse is None
-    out.max_exposure = max(exposures)
+        sufficient = not unwind.has("DEPTH_INSUFFICIENT")
+        _add_scenario(inp, out, name, held, fill.spec.to_asset, legs[0], sufficient, unwind.final_amount, result, start)
+    _stress_totals(out)
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +770,7 @@ def _unit_values(accounting_asset: str, books: Sequence[BookSnapshot], rules: Se
     """Conservative liquidation value of one unit of each asset, from the candidate's own books."""
     values = {accounting_asset: ONE}
     for book, rule in zip(books, rules):
-        if not book.bids or not book.asks:
+        if integrity_problems(book):
             continue
         if rule.quote == accounting_asset:
             price = book.bids[0][0]
@@ -842,6 +902,16 @@ def _aegis(
         "Unmatched exposure", "INVENTORY_EXPOSURE_EXCEEDED",
     )  # fmt: skip
     daily = config.daily_loss_limit
+    other_losses = sorted(a for a, x in inp.paper_loss_today.items() if x > 0 and (daily is None or a != daily.asset))
+    if daily is not None and other_losses:
+        findings.append(
+            Finding(
+                "AEGIS",
+                "LIMIT_ASSET_MISMATCH",
+                MISSING,
+                f"Paper losses today in {', '.join(other_losses)} cannot be compared with daily_loss_limit in {daily.asset}.",
+            )
+        )
     _check_limit(
         findings, checked, "daily_loss_limit", daily,
         {daily.asset: inp.paper_loss_today.get(daily.asset, ZERO)} if daily else {},
@@ -928,7 +998,8 @@ def _summary(
 ) -> dict:
     worst = None
     if relay.stress:
-        worst = max(relay.stress, key=lambda s: Decimal(s["loss"]["amount"]))
+        unbounded = [s for s in relay.stress if s["loss"] is None]
+        worst = unbounded[0] if unbounded else max(relay.stress, key=lambda s: Decimal(s["loss"]["amount"]))
     return {
         "mode": inp.config.mode.value,
         "decision": decision.value,
@@ -1013,13 +1084,14 @@ def _book_fields(inp: DeskInputs, books: Sequence[BookSnapshot], sides: Sequence
     }
 
 
-def _fee_fields(fills: Sequence[LegFill], fees: Sequence[FeeModel], rules: Sequence[MarketRules]) -> dict:
+def _fee_fields(fills: Sequence[LegFill], fees: Sequence[FeeModel], rules: Sequence[MarketRules], fees_known: bool) -> dict:
+    known = bool(fills) and fees_known
     return {
         "fees_by_leg": [
-            {**fee.as_dict(), "symbol": rule.symbol, "fee_amount": dstr(fill.fee_amount) if fill else None}
+            {**fee.as_dict(), "symbol": rule.symbol, "fee_amount": dstr(fill.fee_amount) if known else None}
             for fill, fee, rule in zip(fills or [None] * len(fees), fees, rules)
         ],
-        "fee_assets": [fill.fee_asset for fill in fills] if fills else None,
+        "fee_assets": [fill.fee_asset for fill in fills] if known else None,
         "fee_tier_evidence": {rule.venue: {"label": fee.label.value, "source": fee.source} for rule, fee in zip(rules, fees)},
     }
 
@@ -1134,7 +1206,7 @@ def evaluate_triangle(
         {"label": triangle.label, "venue": triangle.venue, "legs": [leg.as_dict() for leg in triangle.legs]},
     )
     values.update(_book_fields(inp, books, [leg.side for leg in triangle.legs], problems))
-    values.update(_fee_fields(fills, fees, rules))
+    values.update(_fee_fields(fills, fees, rules, vector.fees_known))
     values.update(
         asset_identifiers={
             "venue": triangle.venue,
@@ -1166,7 +1238,7 @@ def evaluate_triangle(
         conservative_net=money(vector.conservative, start),
         cost_ledger=(
             {
-                "legs": [f.ledger() for f in fills],
+                "legs": _ledger_rows(fills, vector.fees_known),
                 "start": money(vector.feasible, start),
                 "final_in_start_asset": money(vector.conditional + vector.feasible, start) if vector.conditional is not None else None,
                 "residuals_valued_at_zero": {a: dstr(x) for a, x in _residuals(fills, start).items()},
@@ -1242,9 +1314,18 @@ def evaluate_triangle(
             vector.feasible,
             vector.conditional,
             inp.now_monotonic,
+            inp.config_version,
         )
     rank = (DECISION_RANK[decision], _rank_value(vector))
     return Evaluation(triangle.key, StrategyType.TRIANGULAR_SPOT, triangle.label, decision, findings, values, reasons, summary, rank, plan)
+
+
+def _ledger_rows(fills: Sequence[LegFill], fees_known: bool) -> list[dict]:
+    rows = [fill.ledger() for fill in fills]
+    if not fees_known:  # computed before fees; an unknown fee is never shown as zero
+        for row in rows:
+            row.update(fee_rate=None, fee=None)
+    return rows
 
 
 def _residuals(fills: Sequence[LegFill], start: str) -> dict[str, Decimal]:
@@ -1406,7 +1487,7 @@ def _vector_cross(
 def _relay_cross(inp, route: CrossRoute, rules, fees, books, vector: VectorOut) -> RelayOut:
     if not vector.fills:
         return RelayOut(RelayResult.BLOCKED, [Finding("RELAY", "NO_EXECUTABLE_PLAN", FAIL, "VECTOR found no feasible size to plan.")])
-    findings = _relay_common(inp, vector.fills, [route.buy_venue, route.sell_venue])
+    findings = _relay_common(inp, vector.fills, [route.buy_venue, route.sell_venue], rules)
     findings.append(
         Finding(
             "RELAY",
@@ -1416,7 +1497,7 @@ def _relay_cross(inp, route: CrossRoute, rules, fees, books, vector: VectorOut) 
             "submission does not guarantee matched fills.",
         )
     )
-    out = RelayOut(RelayResult.BLOCKED, findings, plan=[_plan_leg(f, fee) for f, fee in zip(vector.fills, fees)])
+    out = RelayOut(RelayResult.BLOCKED, findings, plan=[_plan_leg(f, fee, vector.fees_known) for f, fee in zip(vector.fills, fees)])
     out.recovery_plan = _recovery_plan(
         "If only the buy fills, sell the extra base at market on the buy venue. If only the sell fills, buy the base "
         "back at market on the sell venue to restore inventory."
@@ -1434,32 +1515,14 @@ def _relay_cross(inp, route: CrossRoute, rules, fees, books, vector: VectorOut) 
         rebuy = execute_leg(
             route.legs[1].reversed(), rules[1], books[1], rate_sell, fees[1].in_spent_asset("buy"), available=None, target_base=target
         )
-        results = (
-            ("BUY_FILLS_SELL_FAILS", buy_fill.received, route.base, unwind, unwind.received * (ONE - shift) - buy_fill.spent, buy_fill.spent),
-            ("SELL_FILLS_BUY_FAILS", sell_fill.spent, route.base, rebuy, sell_fill.received - rebuy.spent * (ONE + shift), rebuy.spent),
+        scenarios = (
+            ("BUY_FILLS_SELL_FAILS", buy_fill.received, unwind, unwind.received * (ONE - shift) - buy_fill.spent, buy_fill.spent),
+            ("SELL_FILLS_BUY_FAILS", sell_fill.spent, rebuy, sell_fill.received - rebuy.spent * (ONE + shift), rebuy.spent),
         )
-        losses, exposures = [], []
-        for name, held, asset, recovery, result, exposure in results:
-            losses.append(max(ZERO, -result))
-            exposures.append(exposure)
-            out.stress.append(
-                {
-                    "scenario": name,
-                    "unmatched_exposure": money(held, asset),
-                    "exposure_value_now": money(exposure, route.quote),
-                    "recovery": f"{recovery.spec.side} {recovery.spec.symbol} at market on {recovery.spec.venue}",
-                    "adverse_movement_bps_applied": dstr(adverse),
-                    "net_result": money(result, route.quote),
-                    "loss": money(max(ZERO, -result), route.quote),
-                    "recovery_depth_sufficient": not recovery.has("DEPTH_INSUFFICIENT"),
-                    "time_exposed_ms": None,
-                    "evidence_label": weakest([inp.data_label, ESTIMATED]).value,
-                    "note": "Valued on the current snapshots. Later moves can make it worse; this is not a maximum possible loss.",
-                }
-            )
-        out.worst_loss = max(losses)
-        out.loss_is_lower_bound = adverse is None
-        out.max_exposure = max(exposures)
+        for name, held, recovery, result, exposure in scenarios:
+            sufficient = not recovery.has("DEPTH_INSUFFICIENT")
+            _add_scenario(inp, out, name, held, route.base, recovery.spec, sufficient, exposure, result, route.quote)
+        _stress_totals(out)
     out.status = _status(findings, RelayResult.BLOCKED, RelayResult.NEEDS_ENGINEERING, RelayResult.FEASIBLE_FOR_PAPER)
     return out
 
@@ -1525,7 +1588,7 @@ def evaluate_cross(
         {"label": route.label, "legs": [leg.as_dict() for leg in route.legs]},
     )
     values.update(_book_fields(inp, books, ["buy", "sell"], problems))
-    values.update(_fee_fields(fills, fees, rules))
+    values.update(_fee_fields(fills, fees, rules, vector.fees_known))
     rebalance = inp.config.cost_inputs.rebalance_cost_per_trade
     values.update(
         asset_identifiers={
@@ -1561,7 +1624,7 @@ def evaluate_cross(
         conservative_net=money(vector.conservative, quote),
         cost_ledger=(
             {
-                "legs": [f.ledger() for f in fills],
+                "legs": _ledger_rows(fills, vector.fees_known),
                 "net_before_rebalancing": money(vector.net_before_unknown_costs, quote),
                 "rebalance_cost_per_trade": rebalance.model_dump(mode="json") if rebalance else None,
                 "fees_applied": vector.fees_known,
@@ -1655,8 +1718,10 @@ def evaluate_cross(
             [f.worst_price for f in fills],
             quote,
             buy_fill.spent,
-            vector.net_before_unknown_costs,  # transfers are not simulated, so compare before rebalancing
+            vector.conditional,
             inp.now_monotonic,
+            inp.config_version,
+            allocated_cost=inp.config.cost_inputs.rebalance_cost_per_trade.amount,
         )
     rank = (DECISION_RANK[decision], _rank_value(vector))
     return Evaluation(route.key, StrategyType.SPOT_ACROSS_EXCHANGES, route.label, decision, findings, values, reasons, summary, rank, plan)

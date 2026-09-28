@@ -126,6 +126,7 @@ def full_config(**overrides) -> dict:
             VENUE: {"taker_rate": "0.001", "fee_side": "get", "evidence_label": "VERIFIED", "source": "fixture account page"}
         },
         "venue_eligibility": {VENUE: {"eligible": True, "evidence_label": "VERIFIED", "source": "fixture terms"}},
+        "venue_rules_verified": {VENUE: {"ioc_supported": True, "evidence_label": "VERIFIED", "source": "fixture docs"}},
         "allowed_assets": ["USDT", "BTC", "ETH"],
         "trade_size_limit": {"amount": "1000", "asset": "USDT"},
         "total_deployed_capital_limit": {"amount": "3000", "asset": "USDT"},
