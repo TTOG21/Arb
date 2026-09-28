@@ -37,12 +37,16 @@ class BookSnapshot:
     received_monotonic: float
     source: str
     evidence_label: EvidenceLabel
+    sequence_check: str = "Not available for REST snapshots."
+    checksum: str = "Not available for REST snapshots."
+    observed_monotonic: Optional[float] = None  # when this copy was taken; defaults to received
 
     def age_ms(self, now_monotonic: float) -> int:
         """Upper bound on the book's age, measured on the local monotonic clock.
 
-        The book cannot be older than the moment the request was sent, unless the
-        venue served cached data, which REST snapshots cannot reveal.
+        REST: the book cannot be older than the request, unless the venue served
+        cached data, which a snapshot cannot reveal. Stream: measured from the last
+        update received, so a quiet market reads as older than it is.
         """
         return math.ceil(max(0.0, now_monotonic - self.sent_monotonic) * 1000)
 

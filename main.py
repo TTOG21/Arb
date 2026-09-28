@@ -8,15 +8,24 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from arb.config import DeskConfig, intake_gaps
-from arb.market_data import CcxtMarketData, MarketDataSource
+from arb.market_data import CcxtMarketData, MarketDataSource, StreamingMarketData
 from arb.service import DeskService, ScreenerError
+
+
+def default_market_data() -> MarketDataSource:
+    """ARB_MARKET_DATA=websocket (default) streams order books; =rest uses REST snapshots only."""
+    mode = os.environ.get("ARB_MARKET_DATA", "websocket").strip().lower()
+    if mode not in ("websocket", "rest"):
+        raise ValueError("ARB_MARKET_DATA must be 'websocket' or 'rest'.")
+    rest = CcxtMarketData()
+    return rest if mode == "rest" else StreamingMarketData(rest)
 
 
 def create_app(market_data: Optional[MarketDataSource] = None, data_dir: Optional[Path] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         desk = DeskService(
-            market_data or CcxtMarketData(),
+            market_data or default_market_data(),
             data_dir or Path(os.environ.get("ARB_DATA_DIR", "data")),
         )
         app.state.desk = desk

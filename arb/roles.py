@@ -67,9 +67,9 @@ INVALIDATION_CONDITIONS = [
     "Paper or other evidence that contradicts the modeled fills.",
 ]
 CLOCK_METHOD = (
-    "Local monotonic clock. Each snapshot is bounded by its request send and response receive times; "
-    "book_age_ms is an upper bound measured from the request send time. Venue side caching is not detectable "
-    "from REST snapshots."
+    "Local monotonic clock. REST snapshots are bounded by their request send and receive times, and book_age_ms "
+    "counts from the send time; venue side caching is not detectable. Streamed books count from the last update "
+    "received, so a quiet market reads as older than it is."
 )
 
 
@@ -1067,8 +1067,9 @@ def _book_fields(inp: DeskInputs, books: Sequence[BookSnapshot], sides: Sequence
                 "symbol": b.symbol,
                 "valid": not issues,
                 "problems": issues,
-                "sequence_check": "Not available for REST snapshots.",
-                "checksum": "Not available for REST snapshots.",
+                "source": b.source,
+                "sequence_check": b.sequence_check,
+                "checksum": b.checksum,
             }
             for b, issues in zip(books, problems)
         ],

@@ -184,6 +184,7 @@ class DeskService:
                     "NO_POSITIVE_DISPLAYED_EDGE",
                     f"None of the {len(leads)} priced routes shows a positive top-of-book gross edge, even before fees.",
                 )
+            await self._prepare(venue, sorted({leg.symbol for lead in selected for leg in lead.triangle.legs}), depth)
             evaluations = []
             for lead in selected:
                 triangle = lead.triangle
@@ -211,13 +212,16 @@ class DeskService:
             return self._no_candidate(base, scope, version, "NEEDS_TWO_VENUES", "Cross-exchange research needs at least two venues.")
         setup = scout_setup(config, StrategyType.SPOT_ACROSS_EXCHANGES, venues, [base_asset, quote_asset])
         depth = config.scan.order_book_depth
-        books, rules, fees, missing = {}, {}, {}, []
+        books, rules, fees, missing, available = {}, {}, {}, [], {}
         try:
             for venue in venues:
                 market = (await self.md.load_markets(venue)).get(symbol)
                 if market is None or not is_spot(market) or market.get("active") is False:
                     missing.append(venue)
-                    continue
+                else:
+                    available[venue] = market
+            await asyncio.gather(*(self._prepare(venue, [symbol], depth) for venue in available))
+            for venue, market in available.items():
                 meta = self.md.venue_meta(venue)
                 books[venue] = await self.md.fetch_order_book(venue, symbol, depth)
                 rules[venue] = market_rules(venue, market, meta)
@@ -262,6 +266,12 @@ class DeskService:
             for buy, sell in pairs
         ]
         return self._conclude(base, scope, version, evaluations)
+
+    async def _prepare(self, venue: str, symbols: list[str], depth: int) -> None:
+        """Let a streaming source subscribe to every leg at once, so the legs are close in time."""
+        prepare = getattr(self.md, "prepare_order_books", None)
+        if prepare is not None:
+            await prepare(venue, symbols, depth)
 
     def _close_unseen(self, scope: str, seen: set[str]) -> None:
         for record in self.registry.close_unseen(scope, seen):
@@ -358,8 +368,7 @@ class DeskService:
                     "available": True,
                     "source": self.md.source_name,
                     "evidence_label": self.md.evidence_label.value,
-                    "detail": "Public REST order books, bulk tickers and market metadata. These are snapshots, not "
-                    "streams: legs are fetched one after another, so skew is measured and reported.",
+                    "detail": getattr(self.md, "detail", "Public market data."),
                     "reachability": self.md.status(),
                 },
                 "account_data": {

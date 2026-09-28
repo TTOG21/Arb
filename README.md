@@ -18,6 +18,17 @@ uvicorn main:app --reload            # API docs at http://127.0.0.1:8000/docs
 Config, journal and paper portfolio are stored in `./data` (override with `ARB_DATA_DIR`).
 Market data comes from public exchange endpoints through ccxt; your network must reach them.
 
+| `ARB_MARKET_DATA` | Order books |
+|---|---|
+| `websocket` (default) | Live streams through ccxt.pro, one subscription per symbol in use. REST serves markets and tickers, and replaces any stream that fails, is not offered, or has not delivered a first update within 10 s. |
+| `rest` | REST snapshots only, fetched one leg after another. |
+
+Every packet names each leg's source. A streamed book's age counts from its last update, so a
+quiet market reads as older than it is. Integrity checks depend on the venue's ccxt.pro code:
+`book_integrity` reports them per leg (for example, binance sequence checks are on, while kraken's
+checksum check is off by ccxt default). In PAPER mode an order meets the streamed book after the
+venue's measured REST round trip.
+
 ```bash
 pip install -r requirements-dev.txt
 pytest                               # fixture markets only, no network needed
@@ -95,8 +106,8 @@ from your own account.
 
 ## Known limits
 
-- Order books are REST snapshots fetched one after another, not synchronized streams.
-  Book age and skew are measured as upper bounds and checked against your limits.
+- Book age and skew are measured as upper bounds and checked against your limits. With REST
+  snapshots the legs are fetched one after another; streams keep them close in time.
 - Without your own fee tier, fees are ccxt defaults (`ESTIMATED`), which keeps results at `RESEARCH_ONLY`.
   The same holds for IOC support and order minimums until `venue_rules_verified` is declared, and for
   markets whose trading status the venue does not report.

@@ -128,7 +128,13 @@ class PaperOutcome:
 
 
 def _latency(book: BookSnapshot, plan: PaperPlan) -> int:
-    return math.ceil(max(0.0, book.received_monotonic - plan.decision_monotonic) * 1000)
+    observed = book.received_monotonic if book.observed_monotonic is None else book.observed_monotonic
+    return math.ceil(max(0.0, observed - plan.decision_monotonic) * 1000)
+
+
+def _forward(md: MarketDataSource):
+    """The book our order would meet: a source may add the measured order latency first."""
+    return getattr(md, "forward_order_book", md.fetch_order_book)
 
 
 async def simulate(
@@ -149,7 +155,7 @@ async def _simulate_triangle(md: MarketDataSource, plan: PaperPlan, depth: int) 
     async def book(index: int) -> BookSnapshot:
         if index not in books:
             leg = plan.legs[index]
-            books[index] = await md.fetch_order_book(leg.venue, leg.symbol, depth)
+            books[index] = await _forward(md)(leg.venue, leg.symbol, depth)
             valid[index] = not integrity_problems(books[index])
         return books[index]
 
@@ -229,7 +235,7 @@ async def _simulate_cross(
     books = []
     for leg in plan.legs:
         try:
-            fresh = await md.fetch_order_book(leg.venue, leg.symbol, depth)
+            fresh = await _forward(md)(leg.venue, leg.symbol, depth)
         except MarketDataError as exc:
             out.problems.append(f"LOST_CONNECTIVITY {leg.symbol}@{leg.venue}: {exc}")
             return out  # neither leg is sent without both books
