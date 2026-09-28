@@ -1,5 +1,5 @@
 fastapi
 uvicorn[standard]
 ccxt
-pydantic
+pydantic>=2
 python-dotenv
