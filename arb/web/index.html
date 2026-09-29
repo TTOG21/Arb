@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="el">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arbitrage Desk</title>
+  <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+  <header>
+    <div class="title">
+      <h1>Arbitrage Desk</h1>
+      <p class="muted">Έρευνα και paper trading. Δεν υπάρχει κώδικας για πραγματικές εντολές.</p>
+    </div>
+    <div class="header-meta" id="header-meta"></div>
+  </header>
+
+  <nav role="tablist" aria-label="Ενότητες">
+    <button role="tab" data-tab="overview">Επισκόπηση</button>
+    <button role="tab" data-tab="scan">Σάρωση</button>
+    <button role="tab" data-tab="paper">Paper</button>
+    <button role="tab" data-tab="journal">Ημερολόγιο</button>
+    <button role="tab" data-tab="config">Ρυθμίσεις</button>
+  </nav>
+
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+  <main>
+    <section id="tab-overview" role="tabpanel" hidden>
+      <div class="grid">
+        <div class="card" id="screener-card"></div>
+        <div class="card" id="market-card"></div>
+        <div class="card wide" id="opportunities-card"></div>
+        <div class="card wide" id="missing-card"></div>
+      </div>
+    </section>
+
+    <section id="tab-scan" role="tabpanel" hidden>
+      <div class="grid">
+        <form class="card" id="scan-triangular">
+          <h2>Triangular σε ένα ανταλλακτήριο</h2>
+          <label>Ανταλλακτήριο (ccxt id)<input name="venue" placeholder="π.χ. kraken" required></label>
+          <label>Αρχικό asset<input name="start_asset" placeholder="π.χ. USDT" required></label>
+          <label>Μέγεθος (σε αρχικό asset)<input name="size" inputmode="decimal" placeholder="π.χ. 100" required></label>
+          <button type="submit">Σάρωση</button>
+        </form>
+        <form class="card" id="scan-cross">
+          <h2>Ίδιο ζεύγος σε δύο ανταλλακτήρια</h2>
+          <label>Ζεύγος<input name="symbol" placeholder="π.χ. BTC/USDT" required></label>
+          <label>Ανταλλακτήρια (με κόμμα)<input name="venues" placeholder="π.χ. kraken,bitstamp" required></label>
+          <label>Μέγεθος (σε base asset)<input name="size" inputmode="decimal" placeholder="π.χ. 0.01" required></label>
+          <button type="submit">Σάρωση</button>
+        </form>
+      </div>
+      <div id="scan-result"></div>
+    </section>
+
+    <section id="tab-paper" role="tabpanel" hidden>
+      <div class="grid">
+        <div class="card" id="portfolio-card"></div>
+        <div class="card wide" id="trades-card"></div>
+      </div>
+    </section>
+
+    <section id="tab-journal" role="tabpanel" hidden>
+      <div class="card" id="journal-card"></div>
+    </section>
+
+    <section id="tab-config" role="tabpanel" hidden>
+      <div class="grid">
+        <div class="card wide" id="config-card">
+          <h2>Ρυθμίσεις desk</h2>
+          <p class="muted" id="config-meta"></p>
+          <textarea id="config-text" spellcheck="false" aria-label="Ρυθμίσεις σε JSON"></textarea>
+          <div class="row">
+            <button id="config-save">Αποθήκευση</button>
+            <button id="config-reload" class="secondary">Επαναφόρτωση</button>
+          </div>
+          <pre id="config-errors" class="errors" hidden></pre>
+          <p class="muted">Τα ποσά και τα όρια τα ορίζεις εσύ. Το σύστημα δεν προτείνει κεφάλαια ή όρια, και κάθε αλλαγή ακυρώνει προηγούμενες εγκρίσεις.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

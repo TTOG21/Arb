@@ -17,9 +17,11 @@ def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
 
-def test_root_opens_the_api_docs(client):
-    response = client.get("/", follow_redirects=False)
-    assert (response.status_code, response.headers["location"]) == (307, "/docs")
+def test_root_serves_the_dashboard(client):
+    page = client.get("/")
+    assert page.status_code == 200 and "Arbitrage Desk" in page.text
+    for asset in ("/ui/app.js", "/ui/style.css"):
+        assert client.get(asset).status_code == 200
 
 
 def test_status_is_stopped_until_the_screener_really_runs(client):

@@ -12,11 +12,15 @@ initial settings template) as **deterministic code**, not as chat agents.
 
 ```bash
 pip install -r requirements.txt
-uvicorn main:app --reload            # API docs at http://127.0.0.1:8000/docs
+uvicorn main:app --reload            # dashboard at http://127.0.0.1:8000/, API docs at /docs
 ```
 
 If port 8000 is taken (on Windows this shows as `WinError 10013`), add `--port 8080` and open
-`http://127.0.0.1:8080/docs`. The root URL redirects to the docs.
+`http://127.0.0.1:8080/`.
+
+The dashboard (`arb/web`, plain HTML and JavaScript, no build step) only calls the API below: it shows
+the screener, market data health, tracked opportunities and missing settings, runs scans with the
+full role review, and edits the config.
 
 Config, journal and paper portfolio are stored in `./data` (override with `ARB_DATA_DIR`).
 Market data comes from public exchange endpoints through ccxt; your network must reach them.
@@ -61,6 +65,7 @@ The roles run in one process, so their agreement is not independent validation
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/` | dashboard |
 | GET | `/health` | liveness |
 | GET | `/desk/capabilities` | capability check and the settings still missing |
 | GET / PUT | `/config` | versioned desk config (any change bumps `config_version`) |

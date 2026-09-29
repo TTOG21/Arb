@@ -6,11 +6,14 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from arb.config import DeskConfig, intake_gaps
 from arb.market_data import CcxtMarketData, MarketDataSource, StreamingMarketData
 from arb.service import DeskService, ScreenerError
+
+WEB_DIR = Path(__file__).resolve().parent / "arb" / "web"
 
 
 def default_market_data() -> MarketDataSource:
@@ -69,9 +72,14 @@ def create_app(market_data: Optional[MarketDataSource] = None, data_dir: Optiona
     def health():
         return {"status": "ok"}
 
+    # ---------------------------
+    # 🔹 Dashboard (static page that calls this API)
+    # ---------------------------
+    app.mount("/ui", StaticFiles(directory=WEB_DIR), name="ui")
+
     @app.get("/", include_in_schema=False)
-    def root():
-        return RedirectResponse("/docs")
+    def dashboard():
+        return FileResponse(WEB_DIR / "index.html")
 
     # ---------------------------
     # 🔹 Protocol: capability check and configuration
