@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from arb.config import DeskConfig, intake_gaps
 from arb.market_data import CcxtMarketData, MarketDataSource, StreamingMarketData
@@ -67,6 +68,10 @@ def create_app(market_data: Optional[MarketDataSource] = None, data_dir: Optiona
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/docs")
 
     # ---------------------------
     # 🔹 Protocol: capability check and configuration

@@ -15,6 +15,9 @@ pip install -r requirements.txt
 uvicorn main:app --reload            # API docs at http://127.0.0.1:8000/docs
 ```
 
+If port 8000 is taken (on Windows this shows as `WinError 10013`), add `--port 8080` and open
+`http://127.0.0.1:8080/docs`. The root URL redirects to the docs.
+
 Config, journal and paper portfolio are stored in `./data` (override with `ARB_DATA_DIR`).
 Market data comes from public exchange endpoints through ccxt; your network must reach them.
 

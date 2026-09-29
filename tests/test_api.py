@@ -17,6 +17,11 @@ def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_root_opens_the_api_docs(client):
+    response = client.get("/", follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (307, "/docs")
+
+
 def test_status_is_stopped_until_the_screener_really_runs(client):
     body = client.get("/screener/status").json()
     assert (body["status"], body["active_pairs"], body["cycles_completed"]) == ("stopped", 0, 0)
